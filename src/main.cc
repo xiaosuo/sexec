@@ -1,0 +1,573 @@
+/**
+ * sexec - Execute commands via SSH
+ * Copyright (C) 2016 Changli Gao <xiaosuo@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
+#include <config.h>
+#include <getopt.h>
+
+#include <libssh/libssh.h>
+#include <libssh/callbacks.h>
+
+#include <cstdio>
+#include <cassert>
+#include <cstdlib>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <unordered_set>
+#include <chrono>
+#include <list>
+
+std::string FileGetContents(std::string filename) {
+  std::ifstream ifs(filename, std::ifstream::binary);
+  if (!ifs) {
+    throw std::runtime_error("open: " + filename);
+  }
+  if (!ifs.seekg(0, std::ios_base::end)) {
+    throw std::runtime_error("seekg: " + filename);
+  }
+  auto size = ifs.tellg();
+  if (!ifs.seekg(0, std::ios_base::beg)) {
+    throw std::runtime_error("seekg: " + filename);
+  }
+  std::string contents;
+  contents.resize(size);
+  if (!ifs.read(&contents.front(), size)) {
+    throw std::runtime_error("read: " + filename);
+  }
+  return contents;
+}
+
+struct Options {
+  void Parse(int argc, char *argv[]) {
+    argv0 = argv[0];
+    std::string short_opts = "c:df:hp:t:u:H:";
+    option long_opts[] = {
+      { "cmd",       required_argument, nullptr, 'c' },
+      { "dedup",     no_argument,       nullptr, 'd' },
+      { "file",      required_argument, nullptr, 'f' },
+      { "help",      no_argument,       nullptr, 'h' },
+      { "parallel",  required_argument, nullptr, 'p' },
+      { "timeout",   required_argument, nullptr, 't' },
+      { "user",      required_argument, nullptr, 'u' },
+      { "host",      required_argument, nullptr, 'H' },
+      { nullptr,     0,                 nullptr, 0   }
+    };
+    for (;;) {
+      int opt = getopt_long(argc, argv, short_opts.c_str(), long_opts, nullptr);
+      if (opt == -1) {
+        break;
+      }
+      switch (opt) {
+        case 'c':
+          cmd = optarg;
+          break;
+        case 'd':
+          dedup = true;
+          break;
+        case 'f':
+          script_contents = FileGetContents(optarg);
+          break;
+        case 'h':
+          ShowHelp(stdout);
+          exit(EXIT_SUCCESS);
+          break;
+        case 'p':
+          parallel = atoi(optarg);
+          break;
+        case 't':
+          timeout = atoi(optarg);
+          break;
+        case 'u':
+          user = optarg;
+          break;
+        case 'H':
+          LoadHostsFromFile(optarg);
+          break;
+        default:
+          ShowHelp(stderr);
+          exit(EXIT_FAILURE);
+      }
+    }
+    for (; optind < argc; ++optind) {
+      hosts.push_back(argv[optind]);
+    }
+    Validate();
+  }
+
+  void LoadHostsFromFile(const char *filename) {
+    std::ifstream ifs(filename);
+    if (!ifs) {
+      throw std::runtime_error(std::string("Failed to open ") + filename);
+    }
+    std::string line;
+    while (std::getline(ifs, line)) {
+      if (!line.empty() && line.back() == '\n') {
+        line.pop_back();
+      }
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      if (line.empty()) {
+        continue;
+      }
+      hosts.push_back(line);
+    }
+  }
+
+  void ShowHelp(FILE *out) {
+    fprintf(
+        out,
+        "Usage: %s [OPTION]... [HOST]...\n"
+        "\n"
+        "Options:\n"
+        "  -c, --cmd  <CMD>     Execute <CMD>\n"
+        "  -d, --dedup          Dedup hosts\n"
+        "  -f, --file <FILE>    Execute <FILE>\n"
+        "  -h, --help           Show this message\n"
+        "  -p, --parallel <N>   Max parallel, 1 by default\n"
+        "  -t, --timeout <SEC>  Timeout in seconds per session, -1 by default\n"
+        "  -u, --user <USER>    Signed in as <USER>\n"
+        "  -H, --host <FILE>    Use the hosts in <FILE>\n",
+        argv0.c_str());
+  }
+
+  void Validate() {
+    if (hosts.empty()) {
+      throw std::runtime_error("No host");
+    }
+    if (user.empty()) {
+      throw std::runtime_error("No user");
+    }
+
+    if (dedup) {
+      std::vector<std::string> filtered;
+      filtered.reserve(hosts.size());
+      std::unordered_set<std::string> seen;
+      for (const auto &host : hosts) {
+        if (seen.count(host) != 0) {
+          continue;
+        }
+        filtered.push_back(host);
+        seen.insert(host);
+      }
+      hosts = filtered;
+    }
+
+    // Parse shebang
+    if (cmd.empty()) {
+      if (script_contents.empty()) {
+        throw std::runtime_error("No cmd");
+      }
+      if (script_contents.compare(0, 2, "#!") != 0) {
+        throw std::runtime_error("No shebang");
+      }
+      auto pos = script_contents.find('\n');
+      if (pos == std::string::npos) {
+        throw std::runtime_error("No shebang");
+      }
+      cmd = script_contents.substr(2, pos - 2);
+      if (!cmd.empty() && cmd.back() == '\r') {
+        cmd.pop_back();
+      }
+      if (cmd.empty()) {
+        throw std::runtime_error("No shebang");
+      }
+      cmd += " /dev/stdin";
+    }
+
+    if (timeout == 0) {
+      throw std::runtime_error("Zero timeout?");
+    }
+
+    if (parallel == 0) {
+      throw std::runtime_error("Zero parallel?");
+    }
+  }
+
+  std::string argv0;
+  std::string cmd;
+  std::vector<std::string> hosts;
+  std::string user;
+  bool dedup = false;
+  std::string script_contents;
+  int timeout = -1;
+  int parallel = 1;
+};
+
+class Session {
+ public:
+  Session(const Options &opts, size_t host_index, ssh_event event) :
+      opts_(opts), host_index_(host_index), event_(event) {
+    assert(event_);
+
+    sess_ = ssh_new();
+    if (!sess_) {
+      throw std::bad_alloc();
+    }
+    int rc = ssh_options_set(sess_, SSH_OPTIONS_HOST,
+                             opts.hosts[host_index_].c_str());
+    if (rc != 0) {
+      ssh_free(sess_);
+      throw std::runtime_error("Set SSH_OPTIONS_HOST: " + std::to_string(rc));
+    }
+    ssh_set_blocking(sess_, 0);
+    try {
+      Drive(&Session::Connect);
+    } catch (const std::runtime_error &e) {
+      ssh_free(sess_);
+      throw;
+    }
+    start_time_ = std::chrono::steady_clock::now();
+  }
+
+  ~Session() {
+    ssh_event_remove_session(event_, sess_);
+    if (chan_) {
+      ssh_channel_free(chan_);
+    }
+    if (sess_) {
+      ssh_free(sess_);
+    }
+  }
+
+  // Should be called until false is returned.
+  bool Drive() {
+    if (do_) {
+      (this->*do_)();
+    }
+    return do_ != nullptr;
+  }
+
+  int exit_status() const { return exit_status_; }
+  bool exit_status_set() const { return exit_status_set_; }
+
+  std::string exit_signal() const { return exit_signal_; }
+  bool exit_signal_set() const { return exit_signal_set_; }
+
+  int host_index() const { return host_index_; }
+
+  std::chrono::steady_clock::duration GetRemainingTime() const {
+    return std::chrono::steady_clock::now() - start_time_;
+  }
+
+ private:
+  void Drive(void (Session::*cb)()) {
+    do_ = cb;
+    Drive();
+  }
+
+  void AddEvent() {
+    int rc = ssh_event_add_session(event_, sess_);
+    if (rc != SSH_OK) {
+      throw std::runtime_error("Add session to event: " + std::to_string(rc));
+    }
+  }
+
+  void Connect() {
+    int rc = ssh_connect(sess_);
+    if (!added_event_) {
+      AddEvent();
+      added_event_ = true;
+    }
+    switch (rc) {
+      case SSH_OK:
+        rc = ssh_options_set(sess_, SSH_OPTIONS_USER, opts_.user.c_str());
+        if (rc) {
+          throw std::runtime_error("Set user option: " + std::to_string(rc));
+        }
+        Drive(&Session::Authenticate);
+        break;
+      case SSH_AGAIN:
+        break;
+      default:
+        throw std::runtime_error("Connect: " + std::to_string(rc));
+    }
+  }
+
+  void Authenticate() {
+    int rc = ssh_userauth_gssapi(sess_);
+    switch (rc) {
+      case SSH_AUTH_SUCCESS:
+        assert(!chan_);
+        chan_ = ssh_channel_new(sess_);
+        if (!chan_) {
+          throw std::bad_alloc();
+        }
+        memset(&cb_, 0, sizeof(cb_));
+        ssh_callbacks_init(&cb_);
+        cb_.userdata = this;
+        cb_.channel_exit_status_function = &OnChannelExitStatus;
+        cb_.channel_exit_signal_function = &OnChannelExitSignal;
+        rc = ssh_set_channel_callbacks(chan_, &cb_);
+        if (rc != 0) {
+          throw std::runtime_error(
+              "Set channel callbacks: " + std::to_string(rc));
+        }
+        Drive(&Session::OpenChannel);
+        break;
+      case SSH_AUTH_AGAIN:
+        break;
+      default:
+        throw std::runtime_error("Authentiate: " + std::to_string(rc));
+    }
+  }
+
+  void OpenChannel() {
+    int rc = ssh_channel_open_session(chan_);
+    switch (rc) {
+      case SSH_OK:
+        Drive(&Session::ExecuteCommand);
+        break;
+      case SSH_AGAIN:
+        break;
+      default:
+        throw std::runtime_error("OpenChannel: " + std::to_string(rc));
+    }
+  }
+
+  void ExecuteCommand() {
+    int rc = ssh_channel_request_exec(chan_, opts_.cmd.c_str());
+    switch (rc) {
+      case SSH_OK:
+        Drive(&Session::Communicate);
+        break;
+      case SSH_AGAIN:
+        break;
+      default:
+        throw std::runtime_error("ExecuteCommand: " + std::to_string(rc));
+    }
+  }
+
+  void Communicate() {
+    if (script_contents_offset_ < opts_.script_contents.size()) {
+      for (;;) {
+        int rc = ssh_channel_write(
+            chan_, opts_.script_contents.data() + script_contents_offset_,
+            opts_.script_contents.size() - script_contents_offset_);
+        if (rc < 0) {
+          throw std::runtime_error("Write to channel: " + std::to_string(rc));
+        } else if (rc == 0) {
+          break;
+        }
+        script_contents_offset_ += rc;
+        if (script_contents_offset_ == opts_.script_contents.size()) {
+          rc = ssh_channel_send_eof(chan_);
+          if (rc != SSH_OK) {
+            throw std::runtime_error("Send EOF: " + std::to_string(rc));
+          }
+          break;
+        }
+      }
+    }
+
+    for (int is_stderr = 0; is_stderr < 2; ++is_stderr) {
+      char buf[LINE_MAX];
+      bool loop = true;
+      do {
+        int rc = ssh_channel_read_nonblocking(chan_, buf, sizeof(buf),
+                                              is_stderr);
+        switch (rc) {
+          case 0:
+          case SSH_AGAIN:
+          case SSH_EOF:
+            loop = false;
+            break;
+          default:
+            if (rc < 0) {
+              throw std::runtime_error("Read channel: " + std::to_string(rc));
+            }
+            buf_[is_stderr].append(buf, rc);
+            while (!buf_[is_stderr].empty()) {
+              auto pos = buf_[is_stderr].find('\n');
+              if (pos == std::string::npos) {
+                break;
+              }
+              FILE *out = is_stderr ? stderr : stdout;
+              fprintf(out, "%s ", opts_.hosts[host_index_].c_str());
+              fwrite(buf_[is_stderr].data(), pos + 1, 1, out);
+              buf_[is_stderr] = buf_[is_stderr].substr(pos + 1);
+            }
+        }
+      } while (loop);
+    }
+
+    if (ssh_channel_is_eof(chan_)) {
+      for (int is_stderr = 0; is_stderr < 2; ++is_stderr) {
+        auto &buf = buf_[is_stderr];
+        if (!buf.empty()) {
+          FILE *out = is_stderr ? stderr : stdout;
+          fprintf(out, "%s ", opts_.hosts[host_index_].c_str());
+          fwrite(buf.data(), buf.size(), 1, out);
+          fputc('\n', out);
+          buf.clear();
+        }
+      }
+      if (exit_status_set_ || exit_signal_set_) {
+        Drive(nullptr);
+      }
+    }
+  }
+
+  static void OnChannelExitStatus(ssh_session sess, ssh_channel chan,
+                                  int exit_status, void *userdata) {
+    Session *sess_ = static_cast<Session *>(userdata);
+    sess_->exit_status_ = exit_status;
+    sess_->exit_status_set_ = true;
+  }
+
+  static void OnChannelExitSignal(
+      ssh_session sess, ssh_channel chan, const char *signal, int core,
+      const char *errmsg, const char *lang, void *userdata) {
+    Session *sess_ = static_cast<Session *>(userdata);
+    sess_->exit_signal_ = signal;
+    sess_->exit_signal_set_ = true;
+  }
+
+  const Options &opts_;
+  size_t host_index_;
+  ssh_event event_;
+  ssh_session sess_ = nullptr;
+  ssh_channel chan_ = nullptr;
+  void (Session::*do_)() = nullptr;
+  std::string buf_[2];
+  bool exit_status_set_ = false;
+  int exit_status_ = 0;
+  std::string exit_signal_;
+  bool exit_signal_set_ = false;
+  size_t script_contents_offset_ = 0;
+  ssh_channel_callbacks_struct cb_;
+  bool added_event_ = false;
+  std::chrono::steady_clock::time_point start_time_;
+};
+
+class Sexec {
+ public:
+  Sexec(int argc, char *argv[]) {
+    opts_.Parse(argc, argv);
+    event_ = ssh_event_new();
+    if (!event_) {
+      throw std::runtime_error("New event");
+    }
+  }
+
+  ~Sexec() {
+    sessions_.clear();
+    if (event_) {
+      ssh_event_free(event_);
+    }
+  }
+
+  static void Init() {
+    if (ssh_init()) {
+      throw std::runtime_error("Init libssh");
+    }
+  }
+
+  static void Finalize() {
+    if (ssh_finalize()) {
+      throw std::runtime_error("Finalize libssh");
+    }
+  }
+
+  void Run() {
+    size_t host_index = 0;
+    while (host_index < opts_.hosts.size() || !sessions_.empty()) {
+      while (sessions_.size() < opts_.parallel &&
+          host_index < opts_.hosts.size()) {
+        int index = host_index++;
+        try {
+          sessions_.push_back(std::make_unique<Session>(opts_, index, event_));
+        } catch (const std::runtime_error &e) {
+          fprintf(stderr, "%s %s\n", opts_.hosts[index].c_str(), e.what());
+        }
+      }
+      int timeout = -1;
+      if (opts_.timeout > 0) {
+        while (!sessions_.empty()) {
+          timeout = std::chrono::duration_cast<
+              std::chrono::milliseconds>(
+                  sessions_.front()->GetRemainingTime()).count();
+          if (timeout < 1) {
+            fprintf(stderr, "%s timedout\n",
+                    opts_.hosts[sessions_.front()->host_index()].c_str());
+            sessions_.pop_front();
+          } else {
+            break;
+          }
+        }
+        if (timeout == 0) {
+          timeout = -1;
+        }
+      }
+      if (sessions_.empty()) {
+        continue;
+      }
+      int rc = ssh_event_dopoll(event_, timeout);
+      if (rc == SSH_AGAIN) {  // Ignore timedout here and check later.
+        rc = SSH_OK;
+      }
+      if (rc != SSH_OK) {
+        throw std::runtime_error("ssh_event_dopoll: " + std::to_string(rc));
+      }
+      for (auto it = sessions_.begin(); it != sessions_.end(); ) {
+        auto &sess = *it;
+        try {
+          if (!sess->Drive()) {
+            if (sess->exit_status_set() &&
+                sess->exit_status() != EXIT_SUCCESS) {
+              fprintf(stderr, "%s exit_status: %d\n",
+                      opts_.hosts[sess->host_index()].c_str(),
+                      sess->exit_status());
+            }
+            if (sess->exit_signal_set()) {
+              fprintf(stderr, "%s exit_signal: %s\n",
+                      opts_.hosts[sess->host_index()].c_str(),
+                      sess->exit_signal().c_str());
+            }
+            it = sessions_.erase(it);
+          } else {
+            ++it;
+          }
+        } catch (const std::runtime_error &e) {
+          fprintf(stderr, "%s %s\n", opts_.hosts[sess->host_index()].c_str(),
+                  e.what());
+          it = sessions_.erase(it);
+        }
+      }
+    }
+  }
+
+ private:
+  ssh_event event_ = nullptr;
+  std::list<std::unique_ptr<Session>> sessions_;
+  Options opts_;
+};
+
+int main(int argc, char *argv[]) {
+  try {
+    Sexec::Init();
+    Sexec sexec(argc, argv);
+    sexec.Run();
+    Sexec::Finalize();
+  } catch (const std::runtime_error &e) {
+    fprintf(stderr, "%s\n", e.what());
+    exit(EXIT_FAILURE);
+  }
+  return EXIT_SUCCESS;
+}
