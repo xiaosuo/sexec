@@ -19,6 +19,7 @@
 
 #include <config.h>
 #include <getopt.h>
+#include <unistd.h>
 
 #include <libssh/libssh.h>
 #include <libssh/callbacks.h>
@@ -566,7 +567,11 @@ int main(int argc, char *argv[]) {
     sexec.Run();
     Sexec::Finalize();
   } catch (const std::runtime_error &e) {
-    fprintf(stderr, "%s\n", e.what());
+    char host[_POSIX_HOST_NAME_MAX + 1];
+    if (gethostname(host, sizeof(host))) {
+      snprintf(host, sizeof(host), "localhost");
+    }
+    fprintf(stderr, "%s %s\n", host, e.what());
     exit(EXIT_FAILURE);
   }
   return EXIT_SUCCESS;
