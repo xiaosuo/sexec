@@ -24,7 +24,9 @@
 #include <libssh/libssh.h>
 #include <libssh/callbacks.h>
 
+#include <climits>
 #include <cstdio>
+#include <memory>
 #include <cassert>
 #include <cstdlib>
 #include <string>
@@ -489,8 +491,9 @@ class Sexec {
   void Run() {
     size_t host_index = 0;
     while (host_index < opts_.hosts.size() || !sessions_.empty()) {
-      while (sessions_.size() < opts_.parallel &&
-          host_index < opts_.hosts.size()) {
+      while ((opts_.parallel < 0 ||
+              sessions_.size() < static_cast<size_t>(opts_.parallel)) &&
+             host_index < opts_.hosts.size()) {
         int index = host_index++;
         try {
           sessions_.emplace_back(new Session(opts_, index, event_));
