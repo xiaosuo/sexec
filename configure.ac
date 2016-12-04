@@ -12,7 +12,7 @@ AC_SYS_LARGEFILE
 
 # Checks for programs.
 AC_PROG_CXX
-AX_CXX_COMPILE_STDCXX_14
+AX_CXX_COMPILE_STDCXX_11
 
 # Checks for libraries.
 PKG_CHECK_MODULES(LIBSSH, [libssh])

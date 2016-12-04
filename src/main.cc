@@ -493,7 +493,7 @@ class Sexec {
           host_index < opts_.hosts.size()) {
         int index = host_index++;
         try {
-          sessions_.push_back(std::make_unique<Session>(opts_, index, event_));
+          sessions_.emplace_back(new Session(opts_, index, event_));
         } catch (const std::runtime_error &e) {
           fprintf(stderr, "%s %s\n", opts_.hosts[index].c_str(), e.what());
         }
