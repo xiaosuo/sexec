@@ -139,7 +139,7 @@ struct Options {
         "Usage: %s [OPTION]... [HOST]...\n"
         "\n"
         "Options:\n"
-        "  -c, --cmd  <CMD>     Execute <CMD>\n"
+        "  -c, --cmd <CMD>      Execute <CMD>\n"
         "  -d, --dedup          Dedup hosts\n"
         "  -f, --file <FILE>    Execute <FILE>\n"
         "  -h, --help           Show this message\n"
