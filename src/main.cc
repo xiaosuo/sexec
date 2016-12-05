@@ -602,11 +602,16 @@ int main(int argc, char *argv[]) {
     sexec.Run();
     Sexec::Finalize();
   } catch (const std::runtime_error &e) {
-    char host[_POSIX_HOST_NAME_MAX + 1];
-    if (gethostname(host, sizeof(host))) {
-      snprintf(host, sizeof(host), "localhost");
+    auto size = sysconf(_SC_HOST_NAME_MAX);
+    if (size == -1) {
+      size = 64;
     }
-    fprintf(stderr, "%s %s\n", host, e.what());
+    ++size;
+    std::unique_ptr<char[]> host(new char[size]);
+    if (gethostname(host.get(), size)) {
+      snprintf(host.get(), size, "localhost");
+    }
+    fprintf(stderr, "%s %s\n", host.get(), e.what());
     exit(EXIT_FAILURE);
   }
   return EXIT_SUCCESS;
