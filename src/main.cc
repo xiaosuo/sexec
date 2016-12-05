@@ -229,6 +229,12 @@ class Session {
       ssh_free(sess_);
       throw std::runtime_error("Set SSH_OPTIONS_HOST: " + std::to_string(rc));
     }
+    rc = ssh_options_set(sess_, SSH_OPTIONS_COMPRESSION, "no");
+    if (rc != 0) {
+      ssh_free(sess_);
+      throw std::runtime_error(
+          "Set SSH_OPTIONS_COMPRESSION to no: " + std::to_string(rc));
+    }
     ssh_set_blocking(sess_, 0);
     try {
       Drive(&Session::Connect);
