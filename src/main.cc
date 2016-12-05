@@ -20,6 +20,7 @@
 #include <config.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <pwd.h>
 
 #include <libssh/libssh.h>
 #include <libssh/callbacks.h>
@@ -155,7 +156,18 @@ struct Options {
       throw std::runtime_error("No host");
     }
     if (user.empty()) {
-      throw std::runtime_error("No user");
+      auto size = sysconf(_SC_GETPW_R_SIZE_MAX);
+      if (size == -1) {
+        throw std::runtime_error(
+            "Failed to get the size of the buffer for passwd");
+      }
+      std::unique_ptr<char[]> buf(new char[size]);
+      passwd pwd_store;
+      passwd *pwd;
+      if (getpwuid_r(geteuid(), &pwd_store, buf.get(), size, &pwd)) {
+        throw std::runtime_error("Failed to resolve username");
+      }
+      user = pwd->pw_name;
     }
 
     if (dedup) {
