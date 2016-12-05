@@ -252,6 +252,17 @@ class Session {
       throw std::runtime_error(
           "Set SSH_OPTIONS_COMPRESSION to no: " + std::to_string(rc));
     }
+    int no = 0;
+    rc = ssh_options_set(sess_.get(), SSH_OPTIONS_STRICTHOSTKEYCHECK, &no);
+    if (rc != 0) {
+      throw std::runtime_error(
+          "Set SSH_OPTIONS_STRICTHOSTKEYCHECK to no: " + std::to_string(rc));
+    }
+    rc = ssh_options_set(sess_.get(), SSH_OPTIONS_KNOWNHOSTS, "nosuchfile");
+    if (rc != 0) {
+      throw std::runtime_error(
+          "Set SSH_OPTIONS_KNOWNHOSTS to nosuchfile: " + std::to_string(rc));
+    }
     ssh_set_blocking(sess_.get(), 0);
     Drive(&Session::Connect);
     start_time_ = std::chrono::steady_clock::now();
