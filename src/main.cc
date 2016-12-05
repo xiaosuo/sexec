@@ -236,42 +236,31 @@ struct Options {
 class Session {
  public:
   Session(const Options &opts, size_t host_index, ssh_event event) :
-      opts_(opts), host_index_(host_index), event_(event) {
+      opts_(opts), host_index_(host_index), event_(event),
+      sess_(ssh_new(), &ssh_free) {
     assert(event_);
-
-    sess_ = ssh_new();
     if (!sess_) {
       throw std::bad_alloc();
     }
-    int rc = ssh_options_set(sess_, SSH_OPTIONS_HOST,
+    int rc = ssh_options_set(sess_.get(), SSH_OPTIONS_HOST,
                              opts.hosts[host_index_].c_str());
     if (rc != 0) {
-      ssh_free(sess_);
       throw std::runtime_error("Set SSH_OPTIONS_HOST: " + std::to_string(rc));
     }
-    rc = ssh_options_set(sess_, SSH_OPTIONS_COMPRESSION, "no");
+    rc = ssh_options_set(sess_.get(), SSH_OPTIONS_COMPRESSION, "no");
     if (rc != 0) {
-      ssh_free(sess_);
       throw std::runtime_error(
           "Set SSH_OPTIONS_COMPRESSION to no: " + std::to_string(rc));
     }
-    ssh_set_blocking(sess_, 0);
-    try {
-      Drive(&Session::Connect);
-    } catch (const std::runtime_error &e) {
-      ssh_free(sess_);
-      throw;
-    }
+    ssh_set_blocking(sess_.get(), 0);
+    Drive(&Session::Connect);
     start_time_ = std::chrono::steady_clock::now();
   }
 
   ~Session() {
-    ssh_event_remove_session(event_, sess_);
+    ssh_event_remove_session(event_, sess_.get());
     if (chan_) {
       ssh_channel_free(chan_);
-    }
-    if (sess_) {
-      ssh_free(sess_);
     }
   }
 
@@ -302,21 +291,21 @@ class Session {
   }
 
   void AddEvent() {
-    int rc = ssh_event_add_session(event_, sess_);
+    int rc = ssh_event_add_session(event_, sess_.get());
     if (rc != SSH_OK) {
       throw std::runtime_error("Add session to event: " + std::to_string(rc));
     }
   }
 
   void Connect() {
-    int rc = ssh_connect(sess_);
+    int rc = ssh_connect(sess_.get());
     if (!added_event_) {
       AddEvent();
       added_event_ = true;
     }
     switch (rc) {
       case SSH_OK:
-        rc = ssh_options_set(sess_, SSH_OPTIONS_USER, opts_.user.c_str());
+        rc = ssh_options_set(sess_.get(), SSH_OPTIONS_USER, opts_.user.c_str());
         if (rc) {
           throw std::runtime_error("Set user option: " + std::to_string(rc));
         }
@@ -330,11 +319,11 @@ class Session {
   }
 
   void Authenticate() {
-    int rc = ssh_userauth_gssapi(sess_);
+    int rc = ssh_userauth_gssapi(sess_.get());
     switch (rc) {
       case SSH_AUTH_SUCCESS:
         assert(!chan_);
-        chan_ = ssh_channel_new(sess_);
+        chan_ = ssh_channel_new(sess_.get());
         if (!chan_) {
           throw std::bad_alloc();
         }
@@ -471,7 +460,7 @@ class Session {
   const Options &opts_;
   size_t host_index_;
   ssh_event event_;
-  ssh_session sess_ = nullptr;
+  std::unique_ptr<ssh_session_struct, void(*)(ssh_session)> sess_;
   ssh_channel chan_ = nullptr;
   void (Session::*do_)() = nullptr;
   std::string buf_[2];
