@@ -216,6 +216,8 @@ struct Options {
 
     if (timeout == 0) {
       throw std::runtime_error("Zero timeout?");
+    } else if (timeout > 0) {
+      timeout = timeout * 1000;
     }
 
     if (parallel == 0) {
