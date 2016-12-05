@@ -108,7 +108,7 @@ struct Options {
       }
     }
     for (; optind < argc; ++optind) {
-      hosts.push_back(argv[optind]);
+      hosts.emplace_back(argv[optind]);
     }
     Validate();
   }
@@ -129,7 +129,7 @@ struct Options {
       if (line.empty()) {
         continue;
       }
-      hosts.push_back(line);
+      hosts.emplace_back(line);
     }
   }
 
@@ -166,8 +166,8 @@ struct Options {
         if (seen.count(host) != 0) {
           continue;
         }
-        filtered.push_back(host);
-        seen.insert(host);
+        filtered.emplace_back(host);
+        seen.emplace(host);
       }
       hosts = filtered;
     }
