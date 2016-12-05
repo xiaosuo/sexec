@@ -528,6 +528,12 @@ class Sexec {
       if (sessions_.empty()) {
         continue;
       }
+      // Workaround a libssh issue:
+      // In some cases, ssh_channel_request_exec() returns SSH_AGAIN, but
+      // the following ssh_event_dopoll() will block forever.
+      if (timeout < 0 || timeout > 1000) {
+        timeout = 1000;
+      }
       int rc = ssh_event_dopoll(event_, timeout);
       if (rc == SSH_AGAIN) {  // Ignore timedout here and check later.
         rc = SSH_OK;
