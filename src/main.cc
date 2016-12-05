@@ -26,6 +26,7 @@
 #include <libssh/callbacks.h>
 
 #include <climits>
+#include <iostream>
 #include <cstdio>
 #include <memory>
 #include <cassert>
@@ -115,12 +116,19 @@ struct Options {
   }
 
   void LoadHostsFromFile(const char *filename) {
-    std::ifstream ifs(filename);
-    if (!ifs) {
-      throw std::runtime_error(std::string("Failed to open ") + filename);
+    std::istream *is;
+    std::unique_ptr<std::ifstream> ifs;
+    if (strcmp(filename, "-") == 0) {
+      is = &std::cin;
+    } else {
+      ifs.reset(new std::ifstream(filename));
+      if (!*ifs) {
+        throw std::runtime_error(std::string("Failed to open ") + filename);
+      }
+      is = ifs.get();
     }
     std::string line;
-    while (std::getline(ifs, line)) {
+    while (std::getline(*is, line)) {
       if (!line.empty() && line.back() == '\n') {
         line.pop_back();
       }
