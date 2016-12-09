@@ -37,6 +37,10 @@
 #include <unordered_set>
 #include <chrono>
 #include <list>
+#include <future>
+#include <mutex>
+
+static std::mutex g_io_mutex;
 
 std::string FileGetContents(std::string filename) {
   std::ifstream ifs(filename, std::ifstream::binary);
@@ -61,7 +65,7 @@ std::string FileGetContents(std::string filename) {
 struct Options {
   void Parse(int argc, char *argv[]) {
     argv0 = argv[0];
-    std::string short_opts = "c:df:hp:t:u:H:";
+    std::string short_opts = "c:df:hp:t:u:H:T:";
     option long_opts[] = {
       { "cmd",       required_argument, nullptr, 'c' },
       { "dedup",     no_argument,       nullptr, 'd' },
@@ -71,6 +75,7 @@ struct Options {
       { "timeout",   required_argument, nullptr, 't' },
       { "user",      required_argument, nullptr, 'u' },
       { "host",      required_argument, nullptr, 'H' },
+      { "thread",    required_argument, nullptr, 'T' },
       { nullptr,     0,                 nullptr, 0   }
     };
     for (;;) {
@@ -103,6 +108,9 @@ struct Options {
           break;
         case 'H':
           LoadHostsFromFile(optarg);
+          break;
+        case 'T':
+          num_threads = atoi(optarg);
           break;
         default:
           ShowHelp(stderr);
@@ -155,7 +163,8 @@ struct Options {
         "  -p, --parallel <N>   Max parallel, 1 by default\n"
         "  -t, --timeout <SEC>  Timeout in seconds per session, -1 by default\n"
         "  -u, --user <USER>    Signed in as <USER>\n"
-        "  -H, --host <FILE>    Use the hosts in <FILE>\n",
+        "  -H, --host <FILE>    Use the hosts in <FILE>\n"
+        "  -T, --threads <N>    Use <N> threads\n",
         argv0.c_str());
   }
 
@@ -223,6 +232,18 @@ struct Options {
     if (parallel == 0) {
       throw std::runtime_error("Zero parallel?");
     }
+
+    if (num_threads <= 0) {
+      throw std::runtime_error("No threads?");
+    }
+
+    if (static_cast<size_t>(num_threads) > hosts.size()) {
+      num_threads = hosts.size();
+    }
+  }
+
+  const char *GetHost(size_t i) const {
+    return hosts[i].c_str();
   }
 
   std::string argv0;
@@ -233,6 +254,7 @@ struct Options {
   std::string script_contents;
   int timeout = -1;
   int parallel = 1;
+  int num_threads = 1;
 };
 
 class Session {
@@ -244,8 +266,7 @@ class Session {
     if (!sess_) {
       throw std::bad_alloc();
     }
-    int rc = ssh_options_set(sess_.get(), SSH_OPTIONS_HOST,
-                             opts.hosts[host_index_].c_str());
+    int rc = ssh_options_set(sess_.get(), SSH_OPTIONS_HOST, host());
     if (rc != 0) {
       throw std::runtime_error("Set SSH_OPTIONS_HOST: " + std::to_string(rc));
     }
@@ -291,7 +312,7 @@ class Session {
   std::string exit_signal() const { return exit_signal_; }
   bool exit_signal_set() const { return exit_signal_set_; }
 
-  int host_index() const { return host_index_; }
+  const char *host() const { return opts_.GetHost(host_index_); }
 
   std::chrono::steady_clock::duration GetRemainingTime() const {
     return std::chrono::steady_clock::now() - start_time_;
@@ -430,8 +451,11 @@ class Session {
                 break;
               }
               FILE *out = is_stderr ? stderr : stdout;
-              fprintf(out, "%s ", opts_.hosts[host_index_].c_str());
-              fwrite(buf_[is_stderr].data(), pos + 1, 1, out);
+              {
+                std::lock_guard<std::mutex> lock(g_io_mutex);
+                fprintf(out, "%s ", host());
+                fwrite(buf_[is_stderr].data(), pos + 1, 1, out);
+              }
               buf_[is_stderr] = buf_[is_stderr].substr(pos + 1);
             }
         }
@@ -443,9 +467,12 @@ class Session {
         auto &buf = buf_[is_stderr];
         if (!buf.empty()) {
           FILE *out = is_stderr ? stderr : stdout;
-          fprintf(out, "%s ", opts_.hosts[host_index_].c_str());
-          fwrite(buf.data(), buf.size(), 1, out);
-          fputc('\n', out);
+          {
+            std::lock_guard<std::mutex> lock(g_io_mutex);
+            fprintf(out, "%s ", host());
+            fwrite(buf.data(), buf.size(), 1, out);
+            fputc('\n', out);
+          }
           buf.clear();
         }
       }
@@ -491,17 +518,6 @@ class Sexec {
  public:
   Sexec(int argc, char *argv[]) {
     opts_.Parse(argc, argv);
-    event_ = ssh_event_new();
-    if (!event_) {
-      throw std::runtime_error("New event");
-    }
-  }
-
-  ~Sexec() {
-    sessions_.clear();
-    if (event_) {
-      ssh_event_free(event_);
-    }
   }
 
   static void Init() {
@@ -517,28 +533,51 @@ class Sexec {
   }
 
   void Run() {
-    size_t host_index = 0;
-    while (host_index < opts_.hosts.size() || !sessions_.empty()) {
+    std::vector<std::future<void>> futures;
+    futures.reserve(opts_.num_threads);
+    size_t end_index = 0;
+    for (size_t start_index = 0; start_index < opts_.hosts.size();
+         start_index = end_index) {
+      end_index = opts_.hosts.size() * (futures.size() + 1) / opts_.num_threads;
+      futures.emplace_back(
+          std::async(std::launch::async,
+                     [=](){ this->Run(start_index, end_index); }));
+    }
+    for (auto &future : futures) {
+      future.wait();
+    }
+  }
+
+  void Run(size_t start_index, size_t end_index) {
+    std::unique_ptr<ssh_event_struct, void(*)(ssh_event)> event(
+       ssh_event_new(), &ssh_event_free);
+    if (!event) {
+      throw std::runtime_error("New event");
+    }
+    std::list<std::unique_ptr<Session>> sessions;
+    size_t host_index = start_index;
+    while (host_index < end_index || !sessions.empty()) {
       while ((opts_.parallel < 0 ||
-              sessions_.size() < static_cast<size_t>(opts_.parallel)) &&
-             host_index < opts_.hosts.size()) {
+              sessions.size() < static_cast<size_t>(opts_.parallel)) &&
+             host_index < end_index) {
         int index = host_index++;
         try {
-          sessions_.emplace_back(new Session(opts_, index, event_));
+          sessions.emplace_back(new Session(opts_, index, event.get()));
         } catch (const std::runtime_error &e) {
-          fprintf(stderr, "%s %s\n", opts_.hosts[index].c_str(), e.what());
+          std::lock_guard<std::mutex> lock(g_io_mutex);
+          fprintf(stderr, "%s %s\n", opts_.GetHost(index), e.what());
         }
       }
       int timeout = -1;
       if (opts_.timeout > 0) {
-        while (!sessions_.empty()) {
+        while (!sessions.empty()) {
           timeout = std::chrono::duration_cast<
               std::chrono::milliseconds>(
-                  sessions_.front()->GetRemainingTime()).count();
+                  sessions.front()->GetRemainingTime()).count();
           if (timeout < 1) {
-            fprintf(stderr, "%s timedout\n",
-                    opts_.hosts[sessions_.front()->host_index()].c_str());
-            sessions_.pop_front();
+            std::lock_guard<std::mutex> lock(g_io_mutex);
+            fprintf(stderr, "%s timedout\n", sessions.front()->host());
+            sessions.pop_front();
           } else {
             break;
           }
@@ -547,7 +586,7 @@ class Sexec {
           timeout = -1;
         }
       }
-      if (sessions_.empty()) {
+      if (sessions.empty()) {
         continue;
       }
       // Workaround a libssh issue:
@@ -556,44 +595,42 @@ class Sexec {
       if (timeout < 0 || timeout > 1000) {
         timeout = 1000;
       }
-      int rc = ssh_event_dopoll(event_, timeout);
+      int rc = ssh_event_dopoll(event.get(), timeout);
       if (rc == SSH_AGAIN) {  // Ignore timedout here and check later.
         rc = SSH_OK;
       }
       if (rc != SSH_OK) {
         throw std::runtime_error("ssh_event_dopoll: " + std::to_string(rc));
       }
-      for (auto it = sessions_.begin(); it != sessions_.end(); ) {
+      for (auto it = sessions.begin(); it != sessions.end(); ) {
         auto &sess = *it;
         try {
           if (!sess->Drive()) {
             if (sess->exit_status_set() &&
                 sess->exit_status() != EXIT_SUCCESS) {
-              fprintf(stderr, "%s exit_status: %d\n",
-                      opts_.hosts[sess->host_index()].c_str(),
+              std::lock_guard<std::mutex> lock(g_io_mutex);
+              fprintf(stderr, "%s exit_status: %d\n", sess->host(),
                       sess->exit_status());
             }
             if (sess->exit_signal_set()) {
-              fprintf(stderr, "%s exit_signal: %s\n",
-                      opts_.hosts[sess->host_index()].c_str(),
+              std::lock_guard<std::mutex> lock(g_io_mutex);
+              fprintf(stderr, "%s exit_signal: %s\n", sess->host(),
                       sess->exit_signal().c_str());
             }
-            it = sessions_.erase(it);
+            it = sessions.erase(it);
           } else {
             ++it;
           }
         } catch (const std::runtime_error &e) {
-          fprintf(stderr, "%s %s\n", opts_.hosts[sess->host_index()].c_str(),
-                  e.what());
-          it = sessions_.erase(it);
+          std::lock_guard<std::mutex> lock(g_io_mutex);
+          fprintf(stderr, "%s %s\n", sess->host(), e.what());
+          it = sessions.erase(it);
         }
       }
     }
   }
 
  private:
-  ssh_event event_ = nullptr;
-  std::list<std::unique_ptr<Session>> sessions_;
   Options opts_;
 };
 
@@ -613,6 +650,7 @@ int main(int argc, char *argv[]) {
     if (gethostname(host.get(), size)) {
       snprintf(host.get(), size, "localhost");
     }
+    std::lock_guard<std::mutex> lock(g_io_mutex);
     fprintf(stderr, "%s %s\n", host.get(), e.what());
     exit(EXIT_FAILURE);
   }
