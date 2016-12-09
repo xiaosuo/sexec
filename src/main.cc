@@ -225,8 +225,6 @@ struct Options {
 
     if (timeout == 0) {
       throw std::runtime_error("Zero timeout?");
-    } else if (timeout > 0) {
-      timeout = timeout * 1000;
     }
 
     if (parallel == 0) {
@@ -288,7 +286,8 @@ class Session {
     }
     ssh_set_blocking(sess_.get(), 0);
     Drive(&Session::Connect);
-    start_time_ = std::chrono::steady_clock::now();
+    deadline_ = std::chrono::steady_clock::now() +
+        std::chrono::seconds(opts_.timeout);
   }
 
   ~Session() {
@@ -315,7 +314,7 @@ class Session {
   const char *host() const { return opts_.GetHost(host_index_); }
 
   std::chrono::steady_clock::duration GetRemainingTime() const {
-    return std::chrono::steady_clock::now() - start_time_;
+    return deadline_ - std::chrono::steady_clock::now();
   }
 
  private:
@@ -511,7 +510,7 @@ class Session {
   size_t script_contents_offset_ = 0;
   ssh_channel_callbacks_struct cb_;
   bool added_event_ = false;
-  std::chrono::steady_clock::time_point start_time_;
+  std::chrono::steady_clock::time_point deadline_;
 };
 
 class Sexec {
