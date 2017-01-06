@@ -418,12 +418,20 @@ class Session {
         }
         script_contents_offset_ += rc;
         if (script_contents_offset_ == opts_.script_contents.size()) {
-          rc = ssh_channel_send_eof(chan_);
-          if (rc != SSH_OK) {
-            throw std::runtime_error("Send EOF: " + std::to_string(rc));
-          }
+          is_sending_eof_ = true;
           break;
         }
+      }
+    }
+
+    if (is_sending_eof_) {
+      int rc = ssh_channel_send_eof(chan_);
+      if (rc != SSH_OK) {
+        if (rc != SSH_AGAIN) {
+          throw std::runtime_error("Send EOF: " + std::to_string(rc));
+        }
+      } else {
+        is_sending_eof_ = false;
       }
     }
 
@@ -511,6 +519,7 @@ class Session {
   ssh_channel_callbacks_struct cb_;
   bool added_event_ = false;
   std::chrono::steady_clock::time_point deadline_;
+  bool is_sending_eof_ = false;
 };
 
 class Sexec {
