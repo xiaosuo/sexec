@@ -163,7 +163,8 @@ struct Options {
         "  -p, --parallel <N>   Max parallel, 1 by default\n"
         "  -t, --timeout <SEC>  Timeout in seconds per session, -1 by default\n"
         "  -u, --user <USER>    Signed in as <USER>\n"
-        "  -H, --host <FILE>    Use the hosts in <FILE>\n"
+        "  -H, --host <FILE>    Use the hosts in <FILE>. A single dash(`-')\n"
+        "                       means the standard input\n"
         "  -T, --threads <N>    Use <N> threads\n",
         argv0.c_str());
   }
