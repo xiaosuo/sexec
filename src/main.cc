@@ -463,6 +463,7 @@ class Session {
                 std::lock_guard<std::mutex> lock(g_io_mutex);
                 fprintf(out, "%s ", host());
                 fwrite(buf_[is_stderr].data(), pos + 1, 1, out);
+                fflush(out);
               }
               buf_[is_stderr] = buf_[is_stderr].substr(pos + 1);
             }
@@ -480,6 +481,7 @@ class Session {
             fprintf(out, "%s ", host());
             fwrite(buf.data(), buf.size(), 1, out);
             fputc('\n', out);
+            fflush(out);
           }
           buf.clear();
         }
@@ -575,6 +577,7 @@ class Sexec {
         } catch (const std::runtime_error &e) {
           std::lock_guard<std::mutex> lock(g_io_mutex);
           fprintf(stderr, "%s %s\n", opts_.GetHost(index), e.what());
+          fflush(stderr);
         }
       }
       int timeout = -1;
@@ -586,6 +589,7 @@ class Sexec {
           if (timeout < 1) {
             std::lock_guard<std::mutex> lock(g_io_mutex);
             fprintf(stderr, "%s timedout\n", sessions.front()->host());
+            fflush(stderr);
             sessions.pop_front();
           } else {
             break;
@@ -620,11 +624,13 @@ class Sexec {
               std::lock_guard<std::mutex> lock(g_io_mutex);
               fprintf(stderr, "%s exit_status: %d\n", sess->host(),
                       sess->exit_status());
+              fflush(stderr);
             }
             if (sess->exit_signal_set()) {
               std::lock_guard<std::mutex> lock(g_io_mutex);
               fprintf(stderr, "%s exit_signal: %s\n", sess->host(),
                       sess->exit_signal().c_str());
+              fflush(stderr);
             }
             it = sessions.erase(it);
           } else {
@@ -633,6 +639,7 @@ class Sexec {
         } catch (const std::runtime_error &e) {
           std::lock_guard<std::mutex> lock(g_io_mutex);
           fprintf(stderr, "%s %s\n", sess->host(), e.what());
+          fflush(stderr);
           it = sessions.erase(it);
         }
       }
@@ -661,6 +668,7 @@ int main(int argc, char *argv[]) {
     }
     std::lock_guard<std::mutex> lock(g_io_mutex);
     fprintf(stderr, "%s %s\n", host.get(), e.what());
+    fflush(stderr);
     exit(EXIT_FAILURE);
   }
   return EXIT_SUCCESS;
