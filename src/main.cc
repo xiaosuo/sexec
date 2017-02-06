@@ -35,6 +35,7 @@
 #include <vector>
 #include <fstream>
 #include <unordered_set>
+#include <unordered_map>
 #include <chrono>
 #include <list>
 #include <future>
@@ -65,10 +66,11 @@ std::string FileGetContents(std::string filename) {
 struct Options {
   void Parse(int argc, char *argv[]) {
     argv0 = argv[0];
-    std::string short_opts = "c:df:hp:t:u:H:T:";
+    std::string short_opts = "c:de:f:hp:t:u:H:T:v:";
     option long_opts[] = {
       { "cmd",       required_argument, nullptr, 'c' },
       { "dedup",     no_argument,       nullptr, 'd' },
+      { "env",       required_argument, nullptr, 'e' },
       { "file",      required_argument, nullptr, 'f' },
       { "help",      no_argument,       nullptr, 'h' },
       { "parallel",  required_argument, nullptr, 'p' },
@@ -90,6 +92,20 @@ struct Options {
         case 'd':
           dedup = true;
           break;
+        case 'e': {
+          if (!*optarg) {
+            throw std::runtime_error("Empty env");
+          }
+          auto *val = strchr(optarg, '=');
+          if (val == NULL) {
+            envs[optarg] = "";
+          } else if (val == optarg) {
+            throw std::runtime_error("Empty env");
+          } else {
+            envs[std::string(optarg, val - optarg)] = val + 1;
+          }
+          break;
+        }
         case 'f':
           script_contents = FileGetContents(optarg);
           break;
@@ -158,6 +174,7 @@ struct Options {
         "Options:\n"
         "  -c, --cmd <CMD>      Execute <CMD>\n"
         "  -d, --dedup          Dedup hosts\n"
+        "  -e, --env var=val    Set `val' to environment variable `var'\n"
         "  -f, --file <FILE>    Execute <FILE>\n"
         "  -h, --help           Show this message\n"
         "  -p, --parallel <N>   Max parallel sessions per thread,\n"
@@ -225,6 +242,14 @@ struct Options {
       cmd += " /dev/stdin";
     }
 
+    if (!envs.empty()) {
+      std::string prefix = "/usr/bin/env ";
+      for (const auto &env : envs) {
+        prefix += env.first + '=' + env.second + ' ';
+      }
+      cmd = prefix + cmd;
+    }
+
     if (timeout == 0) {
       throw std::runtime_error("Zero timeout?");
     }
@@ -255,6 +280,7 @@ struct Options {
   int timeout = -1;
   int parallel = 1;
   int num_threads = 1;
+  std::unordered_map<std::string, std::string> envs;
 };
 
 class Session {
