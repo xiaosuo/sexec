@@ -43,6 +43,14 @@
 
 static std::mutex g_io_mutex;
 
+static std::unordered_map<std::string, std::string> g_ext2interpreter = {
+  { "sh",  "/bin/sh"             },
+  { "py",  "/usr/bin/env python" },
+  { "rb",  "/usr/bin/env ruby"   },
+  { "pl",  "/usr/bin/env perl"   },
+  { "php", "/usr/bin/env php"    },
+};
+
 std::string FileGetContents(std::string filename) {
   std::ifstream ifs(filename, std::ifstream::binary);
   if (!ifs) {
@@ -107,6 +115,7 @@ struct Options {
           break;
         }
         case 'f':
+          script_name = optarg;
           script_contents = FileGetContents(optarg);
           break;
         case 'h':
@@ -226,18 +235,29 @@ struct Options {
         throw std::runtime_error("No cmd");
       }
       if (script_contents.compare(0, 2, "#!") != 0) {
-        throw std::runtime_error("No shebang");
-      }
-      auto pos = script_contents.find('\n');
-      if (pos == std::string::npos) {
-        throw std::runtime_error("No shebang");
-      }
-      cmd = script_contents.substr(2, pos - 2);
-      if (!cmd.empty() && cmd.back() == '\r') {
-        cmd.pop_back();
-      }
-      if (cmd.empty()) {
-        throw std::runtime_error("No shebang");
+        // Lazy user. Try to derive the interpreter from the file extension.
+        auto last_dot = script_name.rfind('.');
+        if (last_dot == std::string::npos) {
+          throw std::runtime_error("No shebang and file extension");
+        }
+        auto file_ext = script_name.substr(last_dot + 1);
+        auto it = g_ext2interpreter.find(file_ext);
+        if (it == g_ext2interpreter.end()) {
+          throw std::runtime_error("Unknown file extension: " + file_ext);
+        }
+        cmd = it->second;
+      } else {
+        auto pos = script_contents.find('\n');
+        if (pos == std::string::npos) {
+          throw std::runtime_error("No shebang");
+        }
+        cmd = script_contents.substr(2, pos - 2);
+        if (!cmd.empty() && cmd.back() == '\r') {
+          cmd.pop_back();
+        }
+        if (cmd.empty()) {
+          throw std::runtime_error("No shebang");
+        }
       }
       cmd += " /dev/stdin";
     }
@@ -276,6 +296,7 @@ struct Options {
   std::vector<std::string> hosts;
   std::string user;
   bool dedup = false;
+  std::string script_name;
   std::string script_contents;
   int timeout = -1;
   int parallel = 1;
