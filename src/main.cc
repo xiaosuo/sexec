@@ -454,6 +454,39 @@ class Session {
     }
   }
 
+  static bool IsSafe(int c) {
+    return c >= 0x80 || isgraph(c) || c == '\t' || c == ' ' || c == '\n';
+  }
+
+  static void WriteSafe(const void *buf, size_t size, FILE *stream) {
+    auto ptr = static_cast<const unsigned char *>(buf);
+    auto end = ptr + size;
+    bool safe = true;
+    for (; ptr < end; ++ptr) {
+      if (!IsSafe(*ptr)) {
+        safe = false;
+        break;
+      }
+    }
+    if (safe) {
+      fwrite(buf, size, 1, stream);
+    } else {
+      std::vector<uint8_t> enc;
+      for (ptr = end - size; ptr < end; ++ptr) {
+        auto c = *ptr;
+        if (IsSafe(c)) {
+          enc.push_back(c);
+        } else {
+          enc.push_back('\\');
+          enc.push_back('0' + (c >> 6));
+          enc.push_back('0' + ((c >> 3) & 0x7));
+          enc.push_back('0' + (c & 0x7));
+        }
+      }
+      fwrite(enc.data(), enc.size(), 1, stream);
+    }
+  }
+
   void Communicate() {
     if (script_contents_offset_ < opts_.script_contents.size()) {
       for (;;) {
@@ -510,7 +543,7 @@ class Session {
               {
                 std::lock_guard<std::mutex> lock(g_io_mutex);
                 fprintf(out, "%s ", host());
-                fwrite(buf_[is_stderr].data(), pos + 1, 1, out);
+                WriteSafe(buf_[is_stderr].data(), pos + 1, out);
                 fflush(out);
               }
               buf_[is_stderr] = buf_[is_stderr].substr(pos + 1);
@@ -527,7 +560,7 @@ class Session {
           {
             std::lock_guard<std::mutex> lock(g_io_mutex);
             fprintf(out, "%s ", host());
-            fwrite(buf.data(), buf.size(), 1, out);
+            WriteSafe(buf.data(), buf.size(), out);
             fputc('\n', out);
             fflush(out);
           }
