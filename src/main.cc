@@ -27,6 +27,7 @@
 
 #include <climits>
 #include <iostream>
+#include <sstream>
 #include <cstdio>
 #include <memory>
 #include <cassert>
@@ -624,7 +625,51 @@ class Sexec {
     }
   }
 
+  static std::string PrettyTime(const std::chrono::milliseconds &duration) {
+    int64_t d = 0, h = 0, m = 0, s = 0, ms = duration.count();
+    assert(ms >= 0);
+    if (ms >= 1000) {
+      s = ms / 1000;
+      ms %= 1000;
+      if (s >= 60) {
+        m = s / 60;
+        s %= 60;
+        if (m >= 60) {
+          h = m / 60;
+          m %= 60;
+          if (h >= 24) {
+            d = h / 24;
+            h %= 24;
+          }
+        }
+      }
+    }
+    std::ostringstream oss;
+    if (d > 0) {
+      oss << " " << d << " day(s)";
+    }
+    if (h > 0) {
+      oss << " " << h << " hour(s)";
+    }
+    if (m > 0) {
+      oss << " " << m << " minute(s)";
+    }
+    if (s > 0) {
+      oss << " " << s << " second(s)";
+    }
+    if (ms > 0) {
+      oss << " " << ms << " millisecond(s)";
+    }
+    auto str = oss.str();
+    if (str.empty()) {
+      return "0";
+    } else {
+      return str.substr(1);
+    }
+  }
+
   void Run() {
+    auto start_time = std::chrono::system_clock::now();
     std::vector<std::future<void>> futures;
     futures.reserve(opts_.num_threads);
     size_t end_index = 0;
@@ -638,6 +683,18 @@ class Sexec {
     for (auto &future : futures) {
       future.wait();
     }
+    auto end_time = std::chrono::system_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time - start_time);
+    fprintf(stderr, "- Finished in %s\n", PrettyTime(duration).c_str());
+    if (!failed_hosts_.empty()) {
+      fprintf(stderr, "- Failed %zu host(s):", failed_hosts_.size());
+      for (const auto &host : failed_hosts_) {
+        fprintf(stderr, " %s", host.c_str());
+      }
+      fputc('\n', stderr);
+    }
+    fflush(stderr);
   }
 
   void Run(size_t start_index, size_t end_index) {
@@ -657,6 +714,7 @@ class Sexec {
           sessions.emplace_back(new Session(opts_, index, event.get()));
         } catch (const std::runtime_error &e) {
           std::lock_guard<std::mutex> lock(g_io_mutex);
+          failed_hosts_.insert(opts_.GetHost(index));
           fprintf(stderr, "%s %s\n", opts_.GetHost(index), e.what());
           fflush(stderr);
         }
@@ -669,6 +727,7 @@ class Sexec {
                   sessions.front()->GetRemainingTime()).count();
           if (timeout < 1) {
             std::lock_guard<std::mutex> lock(g_io_mutex);
+            failed_hosts_.insert(sessions.front()->host());
             fprintf(stderr, "%s timedout\n", sessions.front()->host());
             fflush(stderr);
             sessions.pop_front();
@@ -703,12 +762,14 @@ class Sexec {
             if (sess->exit_status_set() &&
                 sess->exit_status() != EXIT_SUCCESS) {
               std::lock_guard<std::mutex> lock(g_io_mutex);
+              failed_hosts_.insert(sess->host());
               fprintf(stderr, "%s exit_status: %d\n", sess->host(),
                       sess->exit_status());
               fflush(stderr);
             }
             if (sess->exit_signal_set()) {
               std::lock_guard<std::mutex> lock(g_io_mutex);
+              failed_hosts_.insert(sess->host());
               fprintf(stderr, "%s exit_signal: %s\n", sess->host(),
                       sess->exit_signal().c_str());
               fflush(stderr);
@@ -719,6 +780,7 @@ class Sexec {
           }
         } catch (const std::runtime_error &e) {
           std::lock_guard<std::mutex> lock(g_io_mutex);
+          failed_hosts_.insert(sess->host());
           fprintf(stderr, "%s %s\n", sess->host(), e.what());
           fflush(stderr);
           it = sessions.erase(it);
@@ -728,6 +790,7 @@ class Sexec {
   }
 
  private:
+  std::unordered_set<std::string> failed_hosts_;
   Options opts_;
 };
 
