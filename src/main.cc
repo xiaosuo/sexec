@@ -738,17 +738,8 @@ int main(int argc, char *argv[]) {
     sexec.Run();
     Sexec::Finalize();
   } catch (const std::runtime_error &e) {
-    auto size = sysconf(_SC_HOST_NAME_MAX);
-    if (size == -1) {
-      size = 64;
-    }
-    ++size;
-    std::unique_ptr<char[]> host(new char[size]);
-    if (gethostname(host.get(), size)) {
-      snprintf(host.get(), size, "localhost");
-    }
     std::lock_guard<std::mutex> lock(g_io_mutex);
-    fprintf(stderr, "%s %s\n", host.get(), e.what());
+    fprintf(stderr, "- %s\n", e.what());
     fflush(stderr);
     exit(EXIT_FAILURE);
   }
