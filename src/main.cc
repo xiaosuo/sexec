@@ -753,7 +753,7 @@ class Sexec {
         rc = SSH_OK;
       }
       if (rc != SSH_OK) {
-        throw std::runtime_error("ssh_event_dopoll: " + std::to_string(rc));
+        fprintf(stderr, "- ssh_event_dopoll: %d\n", rc);
       }
       for (auto it = sessions.begin(); it != sessions.end(); ) {
         auto &sess = *it;
