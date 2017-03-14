@@ -681,7 +681,7 @@ class Sexec {
                      [=](){ this->Run(start_index, end_index); }));
     }
     for (auto &future : futures) {
-      future.wait();
+      future.get();
     }
     auto end_time = std::chrono::system_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
