@@ -52,6 +52,42 @@ static std::unordered_map<std::string, std::string> g_ext2interpreter = {
   { "php", "/usr/bin/env php"    },
 };
 
+std::function<void(FILE*)> g_start_log;
+std::function<void(FILE*)> g_end_log;
+
+void StartLogToConsole(FILE *out) {
+  const char *prefix;
+  if (out == stdout) {
+    prefix = "\033[32;1m";
+  } else {
+    prefix = "\033[31;1m";
+  }
+  fwrite(prefix, 7, 1, out);
+}
+
+void EndLogToConsole(FILE *out) {
+  fwrite("\033[0m", 4, 1, out);
+  fflush(out);
+}
+
+void StartLogToFile(FILE *out) {
+  (void)out;
+}
+
+void EndLogToFile(FILE *out) {
+  fflush(out);
+}
+
+void InstallLogHandler() {
+  if (isatty(STDOUT_FILENO) && isatty(STDERR_FILENO)) {
+    g_start_log = &StartLogToConsole;
+    g_end_log = &EndLogToConsole;
+  } else {
+    g_start_log = &StartLogToFile;
+    g_end_log = &EndLogToFile;
+  }
+}
+
 std::string FileGetContents(std::string filename) {
   std::ifstream ifs(filename, std::ifstream::binary);
   if (!ifs) {
@@ -543,9 +579,10 @@ class Session {
               FILE *out = is_stderr ? stderr : stdout;
               {
                 std::lock_guard<std::mutex> lock(g_io_mutex);
+                g_start_log(out);
                 fprintf(out, "%s ", host());
                 WriteSafe(buf_[is_stderr].data(), pos + 1, out);
-                fflush(out);
+                g_end_log(out);
               }
               buf_[is_stderr] = buf_[is_stderr].substr(pos + 1);
             }
@@ -560,10 +597,11 @@ class Session {
           FILE *out = is_stderr ? stderr : stdout;
           {
             std::lock_guard<std::mutex> lock(g_io_mutex);
+            g_start_log(out);
             fprintf(out, "%s ", host());
             WriteSafe(buf.data(), buf.size(), out);
             fputc('\n', out);
-            fflush(out);
+            g_end_log(out);
           }
           buf.clear();
         }
@@ -686,6 +724,7 @@ class Sexec {
     auto end_time = std::chrono::system_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time);
+    g_start_log(stderr);
     fprintf(stderr, "- Finished in %s\n", PrettyTime(duration).c_str());
     if (!failed_hosts_.empty()) {
       fprintf(stderr, "- Failed %zu host(s):", failed_hosts_.size());
@@ -694,7 +733,7 @@ class Sexec {
       }
       fputc('\n', stderr);
     }
-    fflush(stderr);
+    g_end_log(stderr);
   }
 
   void Run(size_t start_index, size_t end_index) {
@@ -715,8 +754,9 @@ class Sexec {
         } catch (const std::runtime_error &e) {
           std::lock_guard<std::mutex> lock(g_io_mutex);
           failed_hosts_.insert(opts_.GetHost(index));
+          g_start_log(stderr);
           fprintf(stderr, "%s %s\n", opts_.GetHost(index), e.what());
-          fflush(stderr);
+          g_end_log(stderr);
         }
       }
       int timeout = -1;
@@ -728,8 +768,9 @@ class Sexec {
           if (timeout < 1) {
             std::lock_guard<std::mutex> lock(g_io_mutex);
             failed_hosts_.insert(sessions.front()->host());
+            g_start_log(stderr);
             fprintf(stderr, "%s timedout\n", sessions.front()->host());
-            fflush(stderr);
+            g_end_log(stderr);
             sessions.pop_front();
           } else {
             break;
@@ -753,7 +794,9 @@ class Sexec {
         rc = SSH_OK;
       }
       if (rc != SSH_OK) {
+        g_start_log(stderr);
         fprintf(stderr, "- ssh_event_dopoll: %d\n", rc);
+        g_end_log(stderr);
       }
       for (auto it = sessions.begin(); it != sessions.end(); ) {
         auto &sess = *it;
@@ -763,16 +806,18 @@ class Sexec {
                 sess->exit_status() != EXIT_SUCCESS) {
               std::lock_guard<std::mutex> lock(g_io_mutex);
               failed_hosts_.insert(sess->host());
+              g_start_log(stderr);
               fprintf(stderr, "%s exit_status: %d\n", sess->host(),
                       sess->exit_status());
-              fflush(stderr);
+              g_end_log(stderr);
             }
             if (sess->exit_signal_set()) {
               std::lock_guard<std::mutex> lock(g_io_mutex);
               failed_hosts_.insert(sess->host());
+              g_start_log(stderr);
               fprintf(stderr, "%s exit_signal: %s\n", sess->host(),
                       sess->exit_signal().c_str());
-              fflush(stderr);
+              g_end_log(stderr);
             }
             it = sessions.erase(it);
           } else {
@@ -781,8 +826,9 @@ class Sexec {
         } catch (const std::runtime_error &e) {
           std::lock_guard<std::mutex> lock(g_io_mutex);
           failed_hosts_.insert(sess->host());
+          g_start_log(stderr);
           fprintf(stderr, "%s %s\n", sess->host(), e.what());
-          fflush(stderr);
+          g_end_log(stderr);
           it = sessions.erase(it);
         }
       }
@@ -795,6 +841,7 @@ class Sexec {
 };
 
 int main(int argc, char *argv[]) {
+  InstallLogHandler();
   try {
     Sexec::Init();
     Sexec sexec(argc, argv);
@@ -802,8 +849,9 @@ int main(int argc, char *argv[]) {
     Sexec::Finalize();
   } catch (const std::runtime_error &e) {
     std::lock_guard<std::mutex> lock(g_io_mutex);
+    g_start_log(stderr);
     fprintf(stderr, "- %s\n", e.what());
-    fflush(stderr);
+    g_end_log(stderr);
     exit(EXIT_FAILURE);
   }
   return EXIT_SUCCESS;
