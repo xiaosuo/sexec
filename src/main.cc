@@ -55,6 +55,10 @@ static std::unordered_map<std::string, std::string> g_ext2interpreter = {
 std::function<void(FILE*)> g_start_log;
 std::function<void(FILE*)> g_end_log;
 
+int SshUserauthPublicKey(ssh_session sess) {
+  return ssh_userauth_publickey_auto(sess, nullptr, nullptr);
+}
+
 void StartLogToConsole(FILE *out) {
   const char *prefix;
   if (out == stdout) {
@@ -111,8 +115,9 @@ std::string FileGetContents(std::string filename) {
 struct Options {
   void Parse(int argc, char *argv[]) {
     argv0 = argv[0];
-    std::string short_opts = "c:de:f:hp:t:u:H:T:v:";
+    std::string short_opts = "a:c:de:f:hp:t:u:H:T:v:";
     option long_opts[] = {
+      { "auth",      required_argument, nullptr, 'a' },
       { "cmd",       required_argument, nullptr, 'c' },
       { "dedup",     no_argument,       nullptr, 'd' },
       { "env",       required_argument, nullptr, 'e' },
@@ -131,6 +136,29 @@ struct Options {
         break;
       }
       switch (opt) {
+        case 'a': {
+          static char * const tokens[] = {
+            const_cast<char*>("gssapi"),
+            const_cast<char*>("publickey"),
+            nullptr,
+          };
+          char *value;
+          char *subopts = optarg;
+          while (*subopts) {
+            switch (getsubopt(&subopts, tokens, &value)) {
+              case 0:
+                auth_methods.emplace_back(&ssh_userauth_gssapi);
+                break;
+              case 1:
+                auth_methods.emplace_back(&SshUserauthPublicKey);
+                break;
+              default:
+                ShowHelp(stderr);
+                exit(EXIT_FAILURE);
+            }
+          }
+          break;
+        }
         case 'c':
           cmd = optarg;
           break;
@@ -218,6 +246,9 @@ struct Options {
         "Usage: %s [OPTION]... [HOST]...\n"
         "\n"
         "Options:\n"
+        "  -a, --auth <METHODS> Authentication methods separated by `,'\n"
+        "                       `gssapi' by default\n"
+        "                       `gssapi' and `publickey' are supported\n"
         "  -c, --cmd <CMD>      Execute <CMD>\n"
         "  -d, --dedup          Dedup hosts\n"
         "  -e, --env var=val    Set `val' to environment variable `var'\n"
@@ -234,6 +265,9 @@ struct Options {
   }
 
   void Validate() {
+    if (auth_methods.empty()) {
+      auth_methods.emplace_back(&ssh_userauth_gssapi);
+    }
     if (hosts.empty()) {
       throw std::runtime_error("No host");
     }
@@ -339,6 +373,7 @@ struct Options {
   int parallel = 1;
   int num_threads = 1;
   std::unordered_map<std::string, std::string> envs;
+  std::vector<std::function<int(ssh_session)>> auth_methods;
 };
 
 class Session {
@@ -438,7 +473,7 @@ class Session {
   }
 
   void Authenticate() {
-    int rc = ssh_userauth_gssapi(sess_.get());
+    int rc = opts_.auth_methods[auth_method_index_](sess_.get());
     switch (rc) {
       case SSH_AUTH_SUCCESS:
         assert(!chan_);
@@ -461,7 +496,10 @@ class Session {
       case SSH_AUTH_AGAIN:
         break;
       default:
-        throw std::runtime_error("Authentiate: " + std::to_string(rc));
+        if (++auth_method_index_ >= opts_.auth_methods.size()) {
+          throw std::runtime_error("Authentiate: " + std::to_string(rc));
+        }
+        Authenticate();
     }
   }
 
@@ -643,6 +681,7 @@ class Session {
   bool added_event_ = false;
   std::chrono::steady_clock::time_point deadline_;
   bool is_sending_eof_ = false;
+  size_t auth_method_index_ = 0;
 };
 
 class Sexec {
