@@ -764,7 +764,9 @@ class Sexec {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time);
     g_start_log(stderr);
-    fprintf(stderr, "- Finished in %s\n", PrettyTime(duration).c_str());
+    fprintf(stderr, "- Finished %zu host(s) in %s\n",
+            opts_.hosts.size() - failed_hosts_.size(),
+            PrettyTime(duration).c_str());
     if (!failed_hosts_.empty()) {
       fprintf(stderr, "- Failed %zu host(s):", failed_hosts_.size());
       for (const auto &host : failed_hosts_) {
