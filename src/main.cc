@@ -812,6 +812,7 @@ class Sexec {
             g_start_log(stderr);
             fprintf(stderr, "%s timedout\n", sessions.front()->host());
             g_end_log(stderr);
+            StepLocked();
             sessions.pop_front();
           } else {
             break;
@@ -860,6 +861,7 @@ class Sexec {
                       sess->exit_signal().c_str());
               g_end_log(stderr);
             }
+            Step();
             it = sessions.erase(it);
           } else {
             ++it;
@@ -870,6 +872,7 @@ class Sexec {
           g_start_log(stderr);
           fprintf(stderr, "%s %s\n", sess->host(), e.what());
           g_end_log(stderr);
+          StepLocked();
           it = sessions.erase(it);
         }
       }
@@ -877,6 +880,29 @@ class Sexec {
   }
 
  private:
+  void Step() {
+    std::lock_guard<std::mutex> lock(g_io_mutex);
+    StepLocked();
+  }
+
+  void StepLocked() {
+    ++num_finished_hosts_;
+    auto now = std::chrono::steady_clock::now();
+    auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_show_step_ts_);
+    if (delta.count() >= 1000) {
+      last_show_step_ts_ = now;
+      g_start_log(stderr);
+      fprintf(stderr, "- Progress: %zu%%(%zu/%zu)\n",
+              100 * num_finished_hosts_ / opts_.hosts.size(),
+              num_finished_hosts_, opts_.hosts.size());
+      g_end_log(stderr);
+    }
+  }
+
+  std::chrono::steady_clock::time_point last_show_step_ts_ =
+      std::chrono::steady_clock::now();
+  size_t num_finished_hosts_ = 0;
   std::unordered_set<std::string> failed_hosts_;
   Options opts_;
 };
