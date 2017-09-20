@@ -113,9 +113,15 @@ std::string FileGetContents(std::string filename) {
 }
 
 struct Options {
+  ~Options() {
+    if (key) {
+      ssh_key_free(key);
+    }
+  }
+
   void Parse(int argc, char *argv[]) {
     argv0 = argv[0];
-    std::string short_opts = "a:c:de:f:hp:t:u:H:T:v:";
+    std::string short_opts = "a:c:de:f:hi:p:t:u:H:T:v:";
     option long_opts[] = {
       { "auth",      required_argument, nullptr, 'a' },
       { "cmd",       required_argument, nullptr, 'c' },
@@ -123,6 +129,7 @@ struct Options {
       { "env",       required_argument, nullptr, 'e' },
       { "file",      required_argument, nullptr, 'f' },
       { "help",      no_argument,       nullptr, 'h' },
+      { "identity",  required_argument, nullptr, 'i' },
       { "parallel",  required_argument, nullptr, 'p' },
       { "timeout",   required_argument, nullptr, 't' },
       { "user",      required_argument, nullptr, 'u' },
@@ -187,6 +194,22 @@ struct Options {
           ShowHelp(stdout);
           exit(EXIT_SUCCESS);
           break;
+        case 'i': {
+          if (key) {
+            throw std::runtime_error("Duplicate id");
+          }
+          int rc = ssh_pki_import_privkey_file(
+              optarg, nullptr, nullptr, nullptr, &key);
+          if (rc != SSH_OK) {
+            throw std::runtime_error(
+                std::string("Failed to import private key: ") + optarg +
+                ": " + std::to_string(rc));
+          }
+          auth_methods.emplace_back([this](ssh_session sess) -> int {
+            return ssh_userauth_publickey(sess, nullptr, this->key);
+          });
+          break;
+        }
         case 'p':
           parallel = atoi(optarg);
           break;
@@ -246,21 +269,23 @@ struct Options {
         "Usage: %s [OPTION]... [HOST]...\n"
         "\n"
         "Options:\n"
-        "  -a, --auth <METHODS> Authentication methods separated by `,'\n"
-        "                       `gssapi' by default\n"
-        "                       `gssapi' and `publickey' are supported\n"
-        "  -c, --cmd <CMD>      Execute <CMD>\n"
-        "  -d, --dedup          Dedup hosts\n"
-        "  -e, --env var=val    Set `val' to environment variable `var'\n"
-        "  -f, --file <FILE>    Execute <FILE>\n"
-        "  -h, --help           Show this message\n"
-        "  -p, --parallel <N>   Max parallel sessions per thread,\n"
-        "                       1 by default\n"
-        "  -t, --timeout <SEC>  Timeout in seconds per session, -1 by default\n"
-        "  -u, --user <USER>    Signed in as <USER>\n"
-        "  -H, --host <FILE>    Use the hosts in <FILE>. A single dash(`-')\n"
-        "                       means the standard input\n"
-        "  -T, --threads <N>    Use <N> threads\n",
+        "  -a, --auth <METHODS>  Authentication methods separated by `,'\n"
+        "                        `gssapi' by default\n"
+        "                        `gssapi' and `publickey' are supported\n"
+        "  -c, --cmd <CMD>       Execute <CMD>\n"
+        "  -d, --dedup           Dedup hosts\n"
+        "  -e, --env var=val     Set `val' to environment variable `var'\n"
+        "  -f, --file <FILE>     Execute <FILE>\n"
+        "  -h, --help            Show this message\n"
+        "  -i, --identity <FILE> The identity (private key) file\n"
+        "  -p, --parallel <N>    Max parallel sessions per thread,\n"
+        "                        1 by default\n"
+        "  -t, --timeout <SEC>   Timeout in seconds per session,\n"
+        "                        -1 by default\n"
+        "  -u, --user <USER>     Signed in as <USER>\n"
+        "  -H, --host <FILE>     Use the hosts in <FILE>. A single dash(`-')\n"
+        "                        means the standard input\n"
+        "  -T, --threads <N>     Use <N> threads\n",
         argv0.c_str());
   }
 
@@ -374,6 +399,7 @@ struct Options {
   int num_threads = 1;
   std::unordered_map<std::string, std::string> envs;
   std::vector<std::function<int(ssh_session)>> auth_methods;
+  ssh_key key = nullptr;
 };
 
 class Session {
