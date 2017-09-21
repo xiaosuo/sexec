@@ -1,0 +1,12 @@
+Source: sexec
+Maintainer: Changli Gao <xiaosuo@gmail.com>
+Section: misc
+Priority: optional
+Standards-Version: 3.9.2
+Build-Depends: debhelper (>= 9)
+
+Package: sexec
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: execute commands or scripts via SSH on many hosts
+ Execute sexec -h for details.
