@@ -121,7 +121,7 @@ struct Options {
 
   void Parse(int argc, char *argv[]) {
     argv0 = argv[0];
-    std::string short_opts = "a:c:de:f:hi:p:t:u:H:T:v:";
+    std::string short_opts = "a:c:de:f:hi:p:t:u:H:T:V";
     option long_opts[] = {
       { "auth",      required_argument, nullptr, 'a' },
       { "cmd",       required_argument, nullptr, 'c' },
@@ -135,6 +135,7 @@ struct Options {
       { "user",      required_argument, nullptr, 'u' },
       { "host",      required_argument, nullptr, 'H' },
       { "thread",    required_argument, nullptr, 'T' },
+      { "version",   required_argument, nullptr, 'V' },
       { nullptr,     0,                 nullptr, 0   }
     };
     for (;;) {
@@ -225,6 +226,10 @@ struct Options {
         case 'T':
           num_threads = atoi(optarg);
           break;
+        case 'V':
+          printf("%s\n", PACKAGE_STRING);
+          exit(EXIT_SUCCESS);
+          break;
         default:
           ShowHelp(stderr);
           exit(EXIT_FAILURE);
@@ -285,7 +290,8 @@ struct Options {
         "  -u, --user <USER>     Signed in as <USER>\n"
         "  -H, --host <FILE>     Use the hosts in <FILE>. A single dash(`-')\n"
         "                        means the standard input\n"
-        "  -T, --threads <N>     Use <N> threads\n",
+        "  -T, --threads <N>     Use <N> threads\n"
+        "  -V, --version         Display the version of sexec and exit\n",
         argv0.c_str());
   }
 
