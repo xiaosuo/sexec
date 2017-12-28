@@ -419,23 +419,20 @@ class Session {
     }
     int rc = ssh_options_set(sess_.get(), SSH_OPTIONS_HOST, host());
     if (rc != 0) {
-      throw std::runtime_error("Set SSH_OPTIONS_HOST: " + std::to_string(rc));
+      Error("Set SSH_OPTIONS_HOST", rc);
     }
     rc = ssh_options_set(sess_.get(), SSH_OPTIONS_COMPRESSION, "no");
     if (rc != 0) {
-      throw std::runtime_error(
-          "Set SSH_OPTIONS_COMPRESSION to no: " + std::to_string(rc));
+      Error("Set SSH_OPTIONS_COMPRESSION to no", rc);
     }
     int no = 0;
     rc = ssh_options_set(sess_.get(), SSH_OPTIONS_STRICTHOSTKEYCHECK, &no);
     if (rc != 0) {
-      throw std::runtime_error(
-          "Set SSH_OPTIONS_STRICTHOSTKEYCHECK to no: " + std::to_string(rc));
+      Error("Set SSH_OPTIONS_STRICTHOSTKEYCHECK to no", rc);
     }
     rc = ssh_options_set(sess_.get(), SSH_OPTIONS_KNOWNHOSTS, "nosuchfile");
     if (rc != 0) {
-      throw std::runtime_error(
-          "Set SSH_OPTIONS_KNOWNHOSTS to nosuchfile: " + std::to_string(rc));
+      Error("Set SSH_OPTIONS_KNOWNHOSTS to nosuchfile", rc);
     }
     ssh_set_blocking(sess_.get(), 0);
     Drive(&Session::Connect);
@@ -471,6 +468,11 @@ class Session {
   }
 
  private:
+  void Error(std::string prefix, int rc) {
+    throw std::runtime_error(
+        prefix + '(' + std::to_string(rc) + "): " + ssh_get_error(sess_.get()));
+  }
+
   void Drive(void (Session::*cb)()) {
     do_ = cb;
     Drive();
@@ -479,7 +481,7 @@ class Session {
   void AddEvent() {
     int rc = ssh_event_add_session(event_, sess_.get());
     if (rc != SSH_OK) {
-      throw std::runtime_error("Add session to event: " + std::to_string(rc));
+      Error("Add session to event", rc);
     }
   }
 
@@ -493,14 +495,14 @@ class Session {
       case SSH_OK:
         rc = ssh_options_set(sess_.get(), SSH_OPTIONS_USER, opts_.user.c_str());
         if (rc) {
-          throw std::runtime_error("Set user option: " + std::to_string(rc));
+          Error("Set user option", rc);
         }
         Drive(&Session::Authenticate);
         break;
       case SSH_AGAIN:
         break;
       default:
-        throw std::runtime_error("Connect: " + std::to_string(rc));
+        Error("Connect", rc);
     }
   }
 
@@ -520,20 +522,18 @@ class Session {
         cb_.channel_exit_signal_function = &OnChannelExitSignal;
         rc = ssh_set_channel_callbacks(chan_, &cb_);
         if (rc != 0) {
-          throw std::runtime_error(
-              "Set channel callbacks: " + std::to_string(rc));
+          Error("Set channel callbacks", rc);
         }
         Drive(&Session::OpenChannel);
         break;
       case SSH_AUTH_AGAIN:
         break;
       case SSH_AUTH_ERROR:
-        throw std::runtime_error(
-            std::string("Authentication: ") + ssh_get_error(sess_.get()));
+        Error("Authenticate", rc);
         break;
       default:
         if (++auth_method_index_ >= opts_.auth_methods.size()) {
-          throw std::runtime_error("Authentiate: " + std::to_string(rc));
+          Error("Authentiate", rc);
         }
         Authenticate();
     }
@@ -548,7 +548,7 @@ class Session {
       case SSH_AGAIN:
         break;
       default:
-        throw std::runtime_error("OpenChannel: " + std::to_string(rc));
+        Error("OpenChannel", rc);
     }
   }
 
@@ -561,7 +561,7 @@ class Session {
       case SSH_AGAIN:
         break;
       default:
-        throw std::runtime_error("ExecuteCommand: " + std::to_string(rc));
+        Error("ExecuteCommand", rc);
     }
   }
 
@@ -605,7 +605,7 @@ class Session {
             chan_, opts_.script_contents.data() + script_contents_offset_,
             opts_.script_contents.size() - script_contents_offset_);
         if (rc < 0) {
-          throw std::runtime_error("Write to channel: " + std::to_string(rc));
+          Error("Write to channel", rc);
         } else if (rc == 0) {
           break;
         }
@@ -621,7 +621,7 @@ class Session {
       int rc = ssh_channel_send_eof(chan_);
       if (rc != SSH_OK) {
         if (rc != SSH_AGAIN) {
-          throw std::runtime_error("Send EOF: " + std::to_string(rc));
+          Error("Send EOF", rc);
         }
       } else {
         is_sending_eof_ = false;
@@ -642,7 +642,7 @@ class Session {
             break;
           default:
             if (rc < 0) {
-              throw std::runtime_error("Read channel: " + std::to_string(rc));
+              Error("Read channel", rc);
             }
             buf_[is_stderr].append(buf, rc);
             while (!buf_[is_stderr].empty()) {
