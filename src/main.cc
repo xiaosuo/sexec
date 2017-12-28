@@ -527,6 +527,10 @@ class Session {
         break;
       case SSH_AUTH_AGAIN:
         break;
+      case SSH_AUTH_ERROR:
+        throw std::runtime_error(
+            std::string("Authentication: ") + ssh_get_error(sess_.get()));
+        break;
       default:
         if (++auth_method_index_ >= opts_.auth_methods.size()) {
           throw std::runtime_error("Authentiate: " + std::to_string(rc));
