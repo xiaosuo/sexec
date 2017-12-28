@@ -533,7 +533,7 @@ class Session {
         break;
       default:
         if (++auth_method_index_ >= opts_.auth_methods.size()) {
-          Error("Authentiate", rc);
+          Error("Authenticate", rc);
         }
         Authenticate();
     }
