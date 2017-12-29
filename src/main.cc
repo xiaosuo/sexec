@@ -41,6 +41,7 @@
 #include <list>
 #include <future>
 #include <mutex>
+#include <csignal>
 
 static std::mutex g_io_mutex;
 
@@ -54,6 +55,8 @@ static std::unordered_map<std::string, std::string> g_ext2interpreter = {
 
 std::function<void(FILE*)> g_start_log;
 std::function<void(FILE*)> g_end_log;
+
+static volatile sig_atomic_t g_stopping = false;
 
 int SshUserauthPublicKey(ssh_session sess) {
   return ssh_userauth_publickey_auto(sess, nullptr, nullptr);
@@ -810,6 +813,20 @@ class Sexec {
       }
       fputc('\n', stderr);
     }
+    if (!interrupted_hosts_.empty()) {
+      fprintf(stderr, "- Interrupted %zu host(s):", interrupted_hosts_.size());
+      for (const auto &host : interrupted_hosts_) {
+        fprintf(stderr, " %s", host.c_str());
+      }
+      fputc('\n', stderr);
+    }
+    if (!unscheduled_hosts_.empty()) {
+      fprintf(stderr, "- Unscheduled %zu host(s):", unscheduled_hosts_.size());
+      for (const auto &host : unscheduled_hosts_) {
+        fprintf(stderr, " %s", host.c_str());
+      }
+      fputc('\n', stderr);
+    }
     g_end_log(stderr);
   }
 
@@ -866,6 +883,16 @@ class Sexec {
       // the following ssh_event_dopoll() will block forever.
       if (timeout < 0 || timeout > 1000) {
         timeout = 1000;
+      }
+      if (g_stopping) {
+        std::lock_guard<std::mutex> lock(g_io_mutex);
+        for (const auto &sess : sessions) {
+          interrupted_hosts_.emplace(sess->host());
+        }
+        for (; host_index < end_index; ++host_index) {
+          unscheduled_hosts_.emplace(opts_.GetHost(host_index));
+        }
+        return;
       }
       int rc = ssh_event_dopoll(event.get(), timeout);
       if (rc == SSH_AGAIN) {  // Ignore timedout here and check later.
@@ -940,12 +967,24 @@ class Sexec {
       std::chrono::steady_clock::now();
   size_t num_finished_hosts_ = 0;
   std::unordered_set<std::string> failed_hosts_;
+  std::unordered_set<std::string> interrupted_hosts_;
+  std::unordered_set<std::string> unscheduled_hosts_;
   Options opts_;
 };
+
+static void HandleInterrupt(int) {
+  g_stopping = true;
+}
 
 int main(int argc, char *argv[]) {
   InstallLogHandler();
   try {
+    if (signal(SIGINT, &HandleInterrupt) == SIG_ERR) {
+      throw std::runtime_error("Failed to register the handler for SIGINT");
+    }
+    if (signal(SIGTERM, &HandleInterrupt) == SIG_ERR) {
+      throw std::runtime_error("Failed to register the handler for SIGTERM");
+    }
     Sexec::Init();
     Sexec sexec(argc, argv);
     sexec.Run();
