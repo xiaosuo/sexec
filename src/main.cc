@@ -278,7 +278,7 @@ struct Options {
         "\n"
         "Options:\n"
         "  -a, --auth <METHODS>  Authentication methods separated by `,'\n"
-        "                        `gssapi' by default\n"
+        "                        `gssapi,publickey' by default\n"
         "                        `gssapi' and `publickey' are supported\n"
         "  -c, --cmd <CMD>       Execute <CMD>\n"
         "  -d, --dedup           Dedup hosts\n"
@@ -301,6 +301,7 @@ struct Options {
   void Validate() {
     if (auth_methods.empty()) {
       auth_methods.emplace_back(&ssh_userauth_gssapi);
+      auth_methods.emplace_back(&SshUserauthPublicKey);
     }
     if (hosts.empty()) {
       throw std::runtime_error("No host");
