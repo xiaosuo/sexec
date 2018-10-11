@@ -1,0 +1,26 @@
+From 926b797a79838000b74fbd4cd5e5810070d5c8f3 Mon Sep 17 00:00:00 2001
+From: Changli Gao <xiaosuo@gmail.com>
+Date: Thu, 28 Dec 2017 22:40:03 +0800
+Subject: [PATCH] Don't poll closed fds
+
+---
+ src/session.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/session.c b/src/session.c
+index b372dad..fa16a9f 100644
+--- a/src/session.c
++++ b/src/session.c
+@@ -614,7 +614,8 @@ int ssh_handle_packets(ssh_session session, int timeout) {
+     int tm = timeout;
+     int rc;
+ 
+-    if (session == NULL || session->socket == NULL) {
++    if (session == NULL || session->socket == NULL ||
++        !ssh_socket_is_open(session->socket)) {
+         return SSH_ERROR;
+     }
+ 
+-- 
+2.1.4
+
